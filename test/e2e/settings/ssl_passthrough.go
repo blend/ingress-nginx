@@ -118,8 +118,12 @@ var _ = framework.IngressNginxDescribe("[Flag] enable-ssl-passthrough", func() {
 					Name:  "HTTPBUN_SSL_KEY",
 					Value: "/certs/tls.key",
 				},
+				{
+					Name:  "HTTPBUN_USE_PROXY_PROTOCOL",
+					Value: "true",
+				},
 			}
-			f.NewDeploymentWithOpts("echopass", "ghcr.io/sharat87/httpbun:latest", 80, 1, nil, nil, envs, volumeMount, volume, false)
+			f.NewDeploymentWithOpts("echopass", "ghcr.io/blend/httpbun:latest", 80, 1, nil, nil, envs, volumeMount, volume, false)
 
 			f.EnsureIngress(ingressDef)
 

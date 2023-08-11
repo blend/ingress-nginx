@@ -75,7 +75,7 @@ if [[ ${E2E_CHECK_LEAKS} != "" ]]; then
 # Create configMap out of a compressed report file for extraction later
 fi
 
-for rFile in `ls $reportFileNamePrefix*` 
+for rFile in `ls $reportFileNamePrefix*`
 do
   gzip -k $rFile
   kubectl create cm $rFile.gz --from-file $rFile.gz
