@@ -6,12 +6,10 @@ on:
       git-ref:
         description: The target `git` branch, `git` tag or `git` SHA to be released.
         required: true
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: controller
-  ARCH: amd64
-  TAG: ${{ github.event.inputs.git-ref }}
+      publish:
+        description: Push the image to ghcr
+        required: true
+        type: boolean
 
 jobs:
   security:
@@ -30,7 +28,7 @@ jobs:
         # G307 TODO: Deferring unsafe method "Close"
         args: -exclude=G109,G601,G104,G204,G304,G306,G307 -tests=false -exclude-dir=test -exclude-dir=images/  -exclude-dir=docs/ ./...
 
-  lint:
+  test-and-lint:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
@@ -48,38 +46,8 @@ jobs:
     - name: Run Lint
       run: ./hack/verify-golint.sh
 
-  gofmt:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout
-      uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b # v3.2.0
-      with:
-        ref: ${{ github.event.inputs.git-ref }}
-
-    - name: Set up Go
-      id: go
-      uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568 # v3.5.0
-      with:
-        go-version: '1.20'
-        check-latest: true
-
     - name: Run go-fmt
       run: ./hack/verify-gofmt.sh
-
-  test-go:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout
-      uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b # v3.2.0
-      with:
-        ref: ${{ github.event.inputs.git-ref }}
-
-    - name: Set up Go
-      id: go
-      uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568 # v3.5.0
-      with:
-        go-version: '1.20'
-        check-latest: true
 
     - name: Run test
       run: make test
@@ -113,6 +81,8 @@ jobs:
       run: echo ${{ steps.buildx.outputs.platforms }}
 
     - name: Prepare Host
+      env:
+        KUBECTL_VERSION: ${{ vars.KUBECTL_VERSION }}
       run: |
         sudo apt-get -qq update || true
         sudo apt-get install -y pigz
@@ -122,16 +92,17 @@ jobs:
 
     - name: Build images
       env:
-        ARCH: amd64
+        REGISTRY: ingress-controller
+        TAG: 1.0.0-dev
       run: |
-        echo "building images..."
+        echo "building e2e images..."
         make clean-image build image
         make -C test/e2e-image image
 
         echo "creating images cache..."
         docker save \
           nginx-ingress-controller:e2e \
-          $REGISTRY/$IMAGE_NAME:$TAG \
+          ingress-controller/controller:1.0.0-dev \
           | pigz > docker.tar.gz
 
     - name: cache
@@ -140,56 +111,12 @@ jobs:
         name: docker.tar.gz
         path: docker.tar.gz
 
-  kubernetes:
-    name: Kubernetes
-    runs-on: ubuntu-latest
-    needs:
-    - build
-
-    strategy:
-      matrix:
-        k8s: [v1.23.17, v1.24.7, v1.25.3, v1.26.0]
-
-    steps:
-    - name: Checkout
-      uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b # v3.2.0
-      with:
-        ref: ${{ github.event.inputs.git-ref }}
-
-    - name: cache
-      uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7 # v3.0.1
-      with:
-        name: docker.tar.gz
-
-    - name: Create Kubernetes ${{ matrix.k8s }} cluster
-      id: kind
-      run: |
-        kind create cluster --image=kindest/node:${{ matrix.k8s }} --config test/e2e/kind.yaml
-
-    - uses: geekyeggo/delete-artifact@54ab544f12cdb7b71613a16a2b5a37a9ade990af # v2.0.0
-      with:
-        name: docker.tar.gz
-        failOnError: false
-
-    - name: Load images from cache
-      run: |
-        echo "loading docker images..."
-        pigz -dc docker.tar.gz | docker load
-
-    - name: Run e2e tests
-      env:
-        KIND_CLUSTER_NAME: kind
-        SKIP_CLUSTER_CREATION: true
-        SKIP_IMAGE_CREATION: true
-      run: |
-        kind get kubeconfig > $HOME/.kube/kind-config-kind
-        make kind-e2e-test
-
   release:
+    if: ${{ github.event.inputs.publish }}
     name: Release
     runs-on: ubuntu-latest
     needs:
-    - kubernetes
+    - build
     steps:
     - name: Check out ingress-nginx
       uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b
@@ -200,27 +127,18 @@ jobs:
     - name: Log in to the Container registry
       uses: docker/login-action@v2
       with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
+        registry: ghcr.io
+        username: blend
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: cache
-      uses: actions/download-artifact@9782bd6a9848b53b110e712e20e42d89988822b7 # v3.0.1
-      with:
-        name: docker.tar.gz
-
-    - name: Load images from cache
+    - name: Build and push release image
+      env:
+        REGISTRY: ghcr.io/blend
+        TAG: ${{ github.event.inputs.git-ref }}
+        COMMIT_SHA: ${{ github.sha }}
+        PLATFORMS: amd64
+        BUILDX_PLATFORMS: linux/amd64
       run: |
-        echo "loading docker images..."
-        pigz -dc docker.tar.gz | docker load
-        docker image ls
-
-#     - name: Build and push image
-#       run: |
-#         docker image ls
-#         docker push $REGISTRY/$IMAGE_NAME:$TAG
-
-    - uses: geekyeggo/delete-artifact@54ab544f12cdb7b71613a16a2b5a37a9ade990af # v2.0.0
-      with:
-        name: docker.tar.gz
-        failOnError: false
+        echo "creating release image..."
+        make release
+        docker push --all-tags "$REGISTRY/controller"
